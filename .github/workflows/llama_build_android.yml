@@ -3,11 +3,11 @@ name: Build llama-server (Android) and Upload to Release
 on:
   push:
     branches: [ main ]
-    paths-ignore:  # 避免因更新 version.txt 而触发循环（如果不用缓存则需配置）
+    paths-ignore:
       - 'last_build_version.txt'
   schedule:
     - cron: '0 2 * * *'      # 每天 UTC 2:00 检测
-  workflow_dispatch:           # 允许手动触发，可输入参数强制构建
+  workflow_dispatch:
     inputs:
       force:
         description: 'Force build even if version not changed'
@@ -53,6 +53,7 @@ jobs:
             echo "latest_tag=${{ steps.get_latest.outputs.latest_tag }}" >> $GITHUB_OUTPUT
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "latest_tag=" >> $GITHUB_OUTPUT   # 确保输出始终有定义
           fi
 
   build:
@@ -61,23 +62,61 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Restore last build version cache (for update)
+        uses: actions/cache@v4
+        with:
+          path: last_build_version.txt
+          key: last-build-version-${{ runner.os }}
+
       - name: Checkout llama.cpp
         uses: actions/checkout@v4
         with:
           repository: ggerganov/llama.cpp
           ref: ${{ needs.check-version.outputs.latest_tag }}
 
-      # ...（NDK 配置、构建步骤与之前相同，略）...
+      - name: Set up NDK (r27)
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27
+          add-to-path: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build jq
+
+      - name: Configure CMake for Android
+        run: |
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-31 \
+            -DGGML_SHARED=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=armv8.4a+dotprod -D_GNU_SOURCE" \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=armv8.4a+dotprod -D_GNU_SOURCE" \
+            -GNinja
+
+      - name: Build llama-server
+        run: cmake --build build --target llama-server --config Release -j $(nproc)
 
       - name: Collect artifacts
         run: |
           mkdir -p package
           cp build/bin/llama-server package/
           find build -name "*.so" -exec cp {} package/ \;
-          # 复制 libomp.so
+
+      - name: Copy libomp.so from NDK
+        run: |
           NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
           LIBOMP_PATH=$(find "$NDK_PATH" -path "*/linux/aarch64/libomp.so" | head -1)
-          cp "$LIBOMP_PATH" package/
+          if [ -n "$LIBOMP_PATH" ]; then
+            cp "$LIBOMP_PATH" package/
+          else
+            echo "::error::libomp.so not found"
+            exit 1
+          fi
 
       - name: Generate date tag
         id: date
@@ -89,14 +128,13 @@ jobs:
           zip -r ../llama-server-android-${{ steps.date.outputs.tag }}.zip *
           echo "PACKAGE_PATH=$(realpath ../llama-server-android-${{ steps.date.outputs.tag }}.zip)" >> $GITHUB_ENV
 
-      # 清理旧 release：只保留最新的3个（按创建时间降序）
       - name: Clean old releases (keep last 3)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 获取所有匹配前缀的 release，按发布时间排序（新→旧）
+          # 获取所有匹配前缀的 release，按创建时间排序（新→旧）
           releases=$(gh release list --limit 100 --json tagName,createdAt \
-            --jq '.[] | select(.tagName | startswith("llama-server-android-")) | {tag: .tagName, date: .createdAt} | sort_by(.date) | reverse')
+            --jq 'map(select(.tagName | startswith("llama-server-android-"))) | sort_by(.createdAt) | reverse')
           count=$(echo "$releases" | jq length)
           if [ $count -gt 3 ]; then
             # 保留前3个，删除后面的
@@ -107,7 +145,6 @@ jobs:
             done
           fi
 
-      # 上传新 release（日期标签）
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
@@ -117,30 +154,17 @@ jobs:
             ###### 自动构建的 llama-server Android 版本
             - **构建日期**：${{ steps.date.outputs.tag }}
             - **llama.cpp 版本**：${{ needs.check-version.outputs.latest_tag }}
-            - ABI：arm64-v8a（Android API 31+）
+            - ABI：arm64-v8a（支持 Android API 31+）
             - 包含库：$(cd package && ls *.so | tr '\n' ', ')
           files: ${{ env.PACKAGE_PATH }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 更新缓存中的版本号（使用 actions/cache 的 save 模式）
       - name: Save new version to cache
         run: echo "${{ needs.check-version.outputs.latest_tag }}" > last_build_version.txt
-      - name: Save cache
-        uses: actions/cache@v4
-        with:
-          path: last_build_version.txt
-          key: last-build-version-${{ runner.os }}
-          # 由于 cache 的 save 模式需要先 restore，这里用覆盖方式：先 restore 再 save 会创建新 key
-          # 或者使用 actions/cache/save@v4（需单独安装）
-          # 简便做法：使用 upload-artifact 暂存，然后在 check-version job 中下载（但会跨 job 传递）
-          # 更优雅：将版本号写入环境变量，然后通过 actions/cache 的 path 直接指向文件，后续 job 无法直接共享，但这里我们是在 build job 中保存，下一次 run 的 check-version 可以 restore。
-          # 上面的 restore 在 check-version 中已经做了，现在 build job 保存的新文件会在后续 run 中被 restore。
-          # 但注意：cache 的 save 是在 job 完成后自动发生，如果 key 相同则会覆盖。
-          # 所以这里保存后，下次运行 check-version 时会 restore 到最新版本。
+      # 缓存会自动保存，因为之前有 restore 步骤
 
-      # （可选）上传工件并设置保留5天
       - name: Upload build artifacts (optional, retention 5 days)
         uses: actions/upload-artifact@v4
         with:
