@@ -69,35 +69,35 @@ jobs:
           # 复制静态二进制（根目录，方便 adb push）
           cp ${{ env.BUILD_DIR }}/bin/llama-server ${{ env.PORTABLE_DIR }}/llama-server
           
-          # Magisk/KernelSU 专用说明文件
-          cat > ${{ env.PORTABLE_DIR }}/README.txt << 'EOF'
-【Android 原生 arm64 llama-server（Magisk/KernelSU 专用）】
-完全静态编译 · 零依赖 · 直接运行
+          # Magisk/KernelSU 专用说明文件（已修复缩进）
+          cat > ${{ env.PORTABLE_DIR }}/README.txt <<-'EOF'
+            【Android 原生 arm64 llama-server（Magisk/KernelSU 专用）】
+            完全静态编译 · 零依赖 · 直接运行
 
-=== 手动运行（推荐测试）===
-1. adb push llama-server /data/local/tmp/
-2. adb shell
-3. chmod 755 /data/local/tmp/llama-server
-4. /data/local/tmp/llama-server -m /sdcard/model.gguf --host 0.0.0.0 --port 8080 -c 4096 -ngl 0
+            === 手动运行（推荐测试）===
+            1. adb push llama-server /data/local/tmp/
+            2. adb shell
+            3. chmod 755 /data/local/tmp/llama-server
+            4. /data/local/tmp/llama-server -m /sdcard/model.gguf --host 0.0.0.0 --port 8080 -c 4096 -ngl 0
 
-=== Magisk/KernelSU 模块挂载（开机自动可用）===
-1. 在 Magisk/KernelSU App 中新建模块
-2. 把 llama-server 放到模块目录的 system/bin/llama-server
-3. module.prop 示例：
-   id=llama-server
-   name=llama-server
-   version=1.0
-   versionCode=1
-   author=you
-   description=llama-server arm64
-4. service.sh 示例（可选自动启动）：
-   #!/system/bin/sh
-   /system/bin/llama-server -m /data/adb/llama/model.gguf --port 8080 --host 0.0.0.0 -ngl 0 > /data/adb/llama.log 2>&1 &
-5. 安装模块 → 重启 → 直接在 ADB 或终端执行 llama-server
+            === Magisk/KernelSU 模块挂载（开机自动可用）===
+            1. 在 Magisk/KernelSU App 中新建模块
+            2. 把 llama-server 放到模块目录的 system/bin/llama-server
+            3. module.prop 示例：
+               id=llama-server
+               name=llama-server
+               version=1.0
+               versionCode=1
+               author=you
+               description=llama-server arm64
+            4. service.sh 示例（可选自动启动）：
+               #!/system/bin/sh
+               /system/bin/llama-server -m /data/adb/llama/model.gguf --port 8080 --host 0.0.0.0 -ngl 0 > /data/adb/llama.log 2>&1 &
+            5. 安装模块 → 重启 → 直接在 ADB 或终端执行 llama-server
 
-WebUI: 浏览器打开 http://手机IP:8080
-模型建议放 /sdcard/Download/ 或 /data/adb/llama/
-EOF
+            WebUI: 浏览器打开 http://手机IP:8080
+            模型建议放 /sdcard/Download/ 或 /data/adb/llama/
+          EOF
 
       - name: 压缩成 ZIP
         working-directory: llama.cpp
