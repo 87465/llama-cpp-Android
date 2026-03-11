@@ -1,4 +1,4 @@
-name: Build llama-server (Android) and Upload to Release
+name: Build llama-server Release
 
 on:
   push:
