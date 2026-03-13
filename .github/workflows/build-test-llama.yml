@@ -53,6 +53,7 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: false
 
+      # ---------- 修复：完全清除所有转义符，严格纯 bash 语法 ----------
       - name: 获取上游仓库最新 commit SHA
         id: get_commit
         run: |
