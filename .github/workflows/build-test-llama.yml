@@ -53,11 +53,11 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: false
 
-      # ---------- 修复：完全清除所有转义符，严格纯 bash 语法 ----------
+      # ---------- 修正：使用正确的环境变量和命令替换 ----------
       - name: 获取上游仓库最新 commit SHA
         id: get_commit
         run: |
-          SHA=\( (git ls-remote https://github.com/ \){{ env.REPO }}.git ${{ env.REF }} | cut -f1)
+          SHA=$(git ls-remote "https://github.com/$REPO.git" "$REF" | cut -f1)
           echo "LATEST_SHA=$SHA" >> $GITHUB_ENV
           echo "latest_sha=$SHA" >> $GITHUB_OUTPUT
 
@@ -66,7 +66,7 @@ jobs:
         uses: actions/cache/restore@v3
         with:
           path: last_commit.txt
-          key: last-commit-\( {{ env.REPO }}- \){{ env.REF }}
+          key: last-commit-${{ env.REPO }}-${{ env.REF }}
 
       - name: 判断是否需要构建
         id: check
@@ -74,7 +74,7 @@ jobs:
           if [ "${{ github.event_name }}" == "schedule" ]; then
             if [ -f last_commit.txt ]; then
               LAST_SHA=$(cat last_commit.txt)
-              if [ "\( LAST_SHA" == " \){{ steps.get_commit.outputs.latest_sha }}" ]; then
+              if [ "$LAST_SHA" == "${{ steps.get_commit.outputs.latest_sha }}" ]; then
                 echo "✅ 无新提交，跳过构建"
                 echo "skip=true" >> $GITHUB_OUTPUT
               else
@@ -145,8 +145,8 @@ jobs:
         id: release_meta
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d-%H%M%S')
-          TAG="\( {{ env.RELEASE_TAG_PREFIX }} \){TIMESTAMP}-${{ env.SHORT_SHA }}"
-          NAME="\( {{ env.RELEASE_NAME_PREFIX }} \){TIMESTAMP} (${{ env.SHORT_SHA }})"
+          TAG="${{ env.RELEASE_TAG_PREFIX }}${TIMESTAMP}-${{ env.SHORT_SHA }}"
+          NAME="${{ env.RELEASE_NAME_PREFIX }}${TIMESTAMP} (${{ env.SHORT_SHA }})"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "name=$NAME" >> $GITHUB_OUTPUT
 
@@ -192,4 +192,4 @@ jobs:
         uses: actions/cache/save@v3
         with:
           path: last_commit.txt
-          key: last-commit-\( {{ env.REPO }}- \){{ env.REF }}
+          key: last-commit-${{ env.REPO }}-${{ env.REF }}
