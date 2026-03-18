@@ -1,4 +1,4 @@
-name: Build Android Native arm64 llama-server (Pure CPU) with Release & Cleanup
+name: Build Android Native arm64 llama-server (Pure CPU - 官方优化版 + Tag 稳定检测)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
         required: true
         default: 'Release'
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * *'   # 每日 UTC 0 点检测新 Tag
 
 env:
   REPO: ${{ github.event.inputs.repo || 'ggml-org/llama.cpp' }}
@@ -25,7 +25,7 @@ env:
   BUILD_DIR: build-android
   NDK_VERSION: r27d
   RELEASE_TAG_PREFIX: "llama-server-android-"
-  RELEASE_NAME_PREFIX: "llama-server Android arm64 (Pure CPU, Android 15 ready) "
+  RELEASE_NAME_PREFIX: "llama-server Android arm64 (Pure CPU, armv8.7a, Android 15 ready) "
   ARTIFACT_NAME: "llama-server-android-arm64-native-cpu"
 
 permissions:
@@ -53,38 +53,38 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: false
 
-      # ---------- 修正：使用正确的 shell 命令获取最新 commit SHA ----------
-      - name: 获取上游仓库最新 commit SHA
-        id: get_commit
+      # ---------- 获取最新稳定 Tag ----------
+      - name: 获取上游最新稳定 Tag (bXXXX)
+        id: get_tag
         run: |
-          SHA=$(git ls-remote "https://github.com/$REPO.git" "$REF" | cut -f1)
-          echo "LATEST_SHA=$SHA" >> $GITHUB_ENV
-          echo "latest_sha=$SHA" >> $GITHUB_OUTPUT
+          LATEST_TAG=$(git ls-remote --tags "https://github.com/$REPO.git" | \
+                       awk '{print $2}' | grep '^refs/tags/b[0-9]*' | \
+                       sed 's|refs/tags/||' | sort -V | tail -1)
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-      # ---------- 修正：正确使用表达式生成 cache key ----------
-      - name: 恢复上次构建的 commit 缓存
+      - name: 恢复上次构建的 Tag 缓存
         id: cache-restore
         uses: actions/cache/restore@v3
         with:
-          path: last_commit.txt
-          key: last-commit-${{ env.REPO }}-${{ env.REF }}
+          path: last_tag.txt
+          key: last-tag-${{ env.REPO }}
 
-      - name: 判断是否需要构建
+      - name: 判断是否需要构建（仅新稳定 Tag 时触发）
         id: check
         run: |
           if [ "${{ github.event_name }}" == "schedule" ]; then
-            if [ -f last_commit.txt ]; then
-              LAST_SHA=$(cat last_commit.txt)
-              # 修正：正确比较两个 SHA 值
-              if [ "$LAST_SHA" == "${{ steps.get_commit.outputs.latest_sha }}" ]; then
-                echo "✅ 无新提交，跳过构建"
+            if [ -f last_tag.txt ]; then
+              LAST_TAG=$(cat last_tag.txt)
+              if [ "\( LAST_TAG" == " \){{ steps.get_tag.outputs.latest_tag }}" ]; then
+                echo "✅ 无新稳定 Tag（bXXXX 未更新），跳过构建"
                 echo "skip=true" >> $GITHUB_OUTPUT
               else
-                echo "🆕 检测到新提交，开始构建"
+                echo "🆕 检测到新稳定 Tag ${{ steps.get_tag.outputs.latest_tag }}，开始构建"
                 echo "skip=false" >> $GITHUB_OUTPUT
               fi
             else
-              echo "📦 首次运行或无历史缓存，开始构建"
+              echo "📦 首次运行，开始构建"
               echo "skip=false" >> $GITHUB_OUTPUT
             fi
           else
@@ -92,12 +92,12 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 克隆 llama.cpp
+      - name: 克隆 llama.cpp（使用最新稳定 Tag）
         if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.REPO }}
-          ref: ${{ env.REF }}
+          ref: ${{ steps.get_tag.outputs.latest_tag }}
           path: llama.cpp
           fetch-depth: 1
 
@@ -107,8 +107,7 @@ jobs:
         run: |
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
-      # 编译参数中的注释移动到单独行，避免 YAML 解析问题
-      - name: 配置 & 编译 (Pure CPU, Snapdragon optimized, Android 15 ready)
+      - name: 配置 & 编译 (Pure CPU, 官方 armv8.7a 优化)
         if: steps.check.outputs.skip != 'true'
         working-directory: llama.cpp
         run: |
@@ -118,8 +117,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-34 \
-            -DCMAKE_C_FLAGS="-march=armv8.4a+dotprod" \
-            -DCMAKE_CXX_FLAGS="-march=armv8.4a+dotprod" \
+            -DCMAKE_C_FLAGS="-march=armv8.7a" \
+            -DCMAKE_CXX_FLAGS="-march=armv8.7a" \
             -DGGML_OPENMP=OFF \
             -DGGML_LLAMAFILE=OFF \
             -DBUILD_SHARED_LIBS=OFF \
@@ -143,14 +142,13 @@ jobs:
           path: ./llama-server
           retention-days: 15
 
-      # ---------- 修正：正确拼接 Release 标签和名称 ----------
       - name: 创建 Release 标签和名称
         if: steps.check.outputs.skip != 'true' && success()
         id: release_meta
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d-%H%M%S')
-          TAG="${{ env.RELEASE_TAG_PREFIX }}${TIMESTAMP}-${{ env.SHORT_SHA }}"
-          NAME="${{ env.RELEASE_NAME_PREFIX }}${TIMESTAMP} (${{ env.SHORT_SHA }})"
+          TAG="\( {{ env.RELEASE_TAG_PREFIX }} \){TIMESTAMP}-${{ steps.get_tag.outputs.latest_tag }}"
+          NAME="\( {{ env.RELEASE_NAME_PREFIX }} \){TIMESTAMP} (Tag ${{ steps.get_tag.outputs.latest_tag }})"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "name=$NAME" >> $GITHUB_OUTPUT
 
@@ -160,7 +158,7 @@ jobs:
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           name: ${{ steps.release_meta.outputs.name }}
-          body: 自动构建于 ${{ steps.release_meta.outputs.name }} (Pure CPU, armv8.4a+dotprod, Android-34 for Android 15 compatibility)
+          body: 自动构建于 ${{ steps.release_meta.outputs.name }} (Pure CPU, armv8.7a 官方优化, 基于上游稳定 Tag ${{ steps.get_tag.outputs.latest_tag }})
           files: ./llama-server
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -187,14 +185,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           save_min_runs_number: 3
 
-      - name: 保存本次构建的 commit SHA
+      - name: 保存本次构建的稳定 Tag
         if: steps.check.outputs.skip != 'true' && success()
-        run: echo "${{ steps.get_commit.outputs.latest_sha }}" > last_commit.txt
+        run: echo "${{ steps.get_tag.outputs.latest_tag }}" > last_tag.txt
 
-      # ---------- 修正：保存 cache 时 key 也要正确 ----------
-      - name: 缓存本次 commit SHA
+      - name: 缓存本次稳定 Tag
         if: steps.check.outputs.skip != 'true' && success()
         uses: actions/cache/save@v3
         with:
-          path: last_commit.txt
-          key: last-commit-${{ env.REPO }}-${{ env.REF }}
+          path: last_tag.txt
+          key: last-tag-${{ env.REPO }}
