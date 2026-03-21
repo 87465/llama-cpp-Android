@@ -7,10 +7,6 @@ on:
         description: 'llama.cpp 仓库 (owner/repo)'
         required: true
         default: 'ggml-org/llama.cpp'
-      ref:
-        description: '分支或 Tag (master / bxxxx)'
-        required: true
-        default: 'master'
       build_type:
         description: 'Release 或 Debug'
         required: true
@@ -20,7 +16,6 @@ on:
 
 env:
   REPO: ${{ github.event.inputs.repo || 'ggml-org/llama.cpp' }}
-  REF: ${{ github.event.inputs.ref || 'master' }}
   BUILD_TYPE: ${{ github.event.inputs.build_type || 'Release' }}
   BUILD_DIR: build-android
   NDK_VERSION: r27d
@@ -34,20 +29,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
-      - name: 安装 CMake
+      - name: 安装 CMake（最新稳定版）
         uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.27.x'
 
-      - name: 安装 Ninja
-        uses: wirekang/setup-ninja@v1
-        with:
-          platform: linux
-          tag: v1.11.1
+      - name: 安装 Ninja（系统原生，最稳定）
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: 安装 Android NDK
+      - name: 安装 Android NDK（LTS 稳定版）
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: ${{ env.NDK_VERSION }}
@@ -63,9 +55,9 @@ jobs:
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-      - name: 恢复上次构建的 Tag 缓存
+      - name: 恢复上次构建的 Tag 缓存（v5 最新版）
         id: cache-restore
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v5
         with:
           path: last_tag.txt
           key: last-tag-${{ env.REPO }}
@@ -76,7 +68,7 @@ jobs:
           if [ "${{ github.event_name }}" == "schedule" ]; then
             if [ -f last_tag.txt ]; then
               LAST_TAG=$(cat last_tag.txt)
-              if [ "$LAST_TAG" == "${{ steps.get_tag.outputs.latest_tag }}" ]; then
+              if [ "\( LAST_TAG" == " \){{ steps.get_tag.outputs.latest_tag }}" ]; then
                 echo "✅ 无新稳定 Tag（bXXXX 未更新），跳过构建"
                 echo "skip=true" >> $GITHUB_OUTPUT
               else
@@ -94,18 +86,12 @@ jobs:
 
       - name: 克隆 llama.cpp（使用最新稳定 Tag）
         if: steps.check.outputs.skip != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.REPO }}
           ref: ${{ steps.get_tag.outputs.latest_tag }}
           path: llama.cpp
           fetch-depth: 1
-
-      - name: 获取短 SHA
-        if: steps.check.outputs.skip != 'true'
-        working-directory: llama.cpp
-        run: |
-          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
       - name: 配置 & 编译 (OpenMP 彻底静态 + AArch64 Repack)
         if: steps.check.outputs.skip != 'true'
@@ -141,19 +127,19 @@ jobs:
 
       - name: 上传 Artifact（15天后自动删除）
         if: steps.check.outputs.skip != 'true' && success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ./llama-server
-          retention-days: 15    # 15天后 GitHub 自动清理
+          retention-days: 15
 
       - name: 创建 Release 标签和名称
         if: steps.check.outputs.skip != 'true' && success()
         id: release_meta
         run: |
           TIMESTAMP=$(date -u +'%Y%m%d-%H%M%S')
-          TAG="${{ env.RELEASE_TAG_PREFIX }}${TIMESTAMP}-${{ steps.get_tag.outputs.latest_tag }}"
-          NAME="${{ env.RELEASE_NAME_PREFIX }}${TIMESTAMP} (Tag ${{ steps.get_tag.outputs.latest_tag }})"
+          TAG="\( {{ env.RELEASE_TAG_PREFIX }} \){TIMESTAMP}-${{ steps.get_tag.outputs.latest_tag }}"
+          NAME="\( {{ env.RELEASE_NAME_PREFIX }} \){TIMESTAMP} (Tag ${{ steps.get_tag.outputs.latest_tag }})"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "name=$NAME" >> $GITHUB_OUTPUT
 
@@ -167,25 +153,18 @@ jobs:
           files: ./llama-server
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ========== 清理部分（使用 2025-2026 年更新的 Action）==========
-      
-      # 清理旧 Releases：保留最新 3 个，同时删除关联的 Tag
-      # 使用 softprops/action-gh-release 本身不提供清理功能，但可通过 GitHub CLI 实现
-      # 注：由于每次构建创建新 Release，需保留有限数量
-      - name: 清理旧 Releases（保留最新 3 个）
+      # ========== 清理部分（始终执行，保持仓库整洁）==========
+
+      - name: 清理旧 Releases（保留最新 3 个，同时删除 Tag）
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 获取所有 Release，按创建时间排序，保留最新 3 个，删除其余
           gh release list --limit 100 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[3:][] | .tagName' | while read tag; do
             echo "删除旧 Release: $tag"
-            gh release delete "$tag" --yes
-            git push origin --delete "$tag" || true
+            gh release delete "$tag" --cleanup-tag --yes
           done
 
-      # 清理旧 Workflow Runs：保留最新 3 个
-      # 使用 Mattraks/delete-workflow-runs (2026年3月仍在运行，添加 Node.js 24 兼容)
       - name: 清理旧的 Workflow 运行记录（保留最新 3 个）
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
@@ -193,23 +172,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           keep_minimum_runs: 3
-          # 兼容 Node.js 24 运行时（GitHub 2026年6月起默认使用）
-          # 如果 Action 更新不及时，设置此环境变量可提前适配
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-      # 注意：Artifact 无需单独清理
-      # 因为 upload-artifact 已设置 retention-days: 15，GitHub 会自动删除过期工件
-      # 如需额外清理，可使用 jimschubert/delete-artifacts (2026年2月更新 v1.1.3)：
-      # docker run -e GITHUB_TOKEN jimschubert/delete-artifacts:latest --owner=${{ github.repository_owner }} --repo=${{ github.event.repository.name }} --min=0
 
       - name: 保存本次构建的稳定 Tag
         if: steps.check.outputs.skip != 'true' && success()
         run: echo "${{ steps.get_tag.outputs.latest_tag }}" > last_tag.txt
 
-      - name: 缓存本次稳定 Tag
+      - name: 缓存本次稳定 Tag（v5 最新版）
         if: steps.check.outputs.skip != 'true' && success()
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v5
         with:
           path: last_tag.txt
           key: last-tag-${{ env.REPO }}
