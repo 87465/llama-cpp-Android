@@ -139,6 +139,20 @@ jobs:
           cp llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server ./llama-server
           chmod +x ./llama-server
 
+      - name: 创建 Release 标签和名称（关键修复：直接 echo 避免任何展开问题）
+        if: steps.check.outputs.skip != 'true' && success()
+        id: release_meta
+        run: |
+          TIMESTAMP=$(date -u +'%Y%m%d-%H%M%S')
+          echo "tag=\( {{ env.RELEASE_TAG_PREFIX }} \){TIMESTAMP}-${{ steps.get_tag.outputs.latest_tag }}" >> $GITHUB_OUTPUT
+          echo "name=\( {{ env.RELEASE_NAME_PREFIX }} \){TIMESTAMP} (Tag ${{ steps.get_tag.outputs.latest_tag }})" >> $GITHUB_OUTPUT
+
+      - name: Debug Release Tag（方便排查）
+        if: steps.check.outputs.skip != 'true' && success()
+        run: |
+          echo "✅ 生成的 Tag  = ${{ steps.release_meta.outputs.tag }}"
+          echo "✅ 生成的 Name = ${{ steps.release_meta.outputs.name }}"
+
       - name: 上传 Artifact
         if: steps.check.outputs.skip != 'true' && success()
         uses: actions/upload-artifact@v4
@@ -147,17 +161,7 @@ jobs:
           path: ./llama-server
           retention-days: 15
 
-      - name: 创建 Release 标签和名称
-        if: steps.check.outputs.skip != 'true' && success()
-        id: release_meta
-        run: |
-          TIMESTAMP=$(date -u +'%Y%m%d-%H%M%S')
-          TAG="\( {{ env.RELEASE_TAG_PREFIX }} \){TIMESTAMP}-${{ steps.get_tag.outputs.latest_tag }}"
-          NAME="\( {{ env.RELEASE_NAME_PREFIX }} \){TIMESTAMP} (Tag ${{ steps.get_tag.outputs.latest_tag }})"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "name=$NAME" >> $GITHUB_OUTPUT
-
-      - name: 上传 Release 资产
+      - name: 上传 Release 资产（已修复使用 outputs + 防冲突参数）
         if: steps.check.outputs.skip != 'true' && success()
         uses: softprops/action-gh-release@v2
         with:
@@ -166,6 +170,8 @@ jobs:
           body: 自动构建于 ${{ steps.release_meta.outputs.name }} (OpenMP 彻底静态链接 libomp.a + AArch64 repack + armv8.7a + 静态 STL，基于上游稳定 Tag ${{ steps.get_tag.outputs.latest_tag }})
           files: ./llama-server
           token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          fail_on_unmatched_files: false
 
       - name: 清理旧 Releases
         if: always()
