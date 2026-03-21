@@ -1,4 +1,4 @@
-name: Build Android Native arm64 llama-server
+name: Build Android Native arm64 llama-server (OpenMP + AArch64 Repack + 彻底静态链接)
 
 on:
   workflow_dispatch:
@@ -12,15 +12,13 @@ on:
         required: true
         default: 'Release'
   schedule:
-    - cron: '0 0 * * *'   # 每日 UTC 0 点检测新 Tag
+    - cron: '0 0 */3 * *'   # 每 3 天 UTC 0 点检测一次
 
 env:
   REPO: ${{ github.event.inputs.repo || 'ggml-org/llama.cpp' }}
   BUILD_TYPE: ${{ github.event.inputs.build_type || 'Release' }}
   BUILD_DIR: build-android
   NDK_VERSION: r27d
-  RELEASE_TAG_PREFIX: "llama-server-android-"
-  RELEASE_NAME_PREFIX: "llama-server Android arm64 (OpenMP + Repack 彻底静态) "
   ARTIFACT_NAME: "llama-server-android-arm64-openmp-repack-static"
 
 permissions:
@@ -31,69 +29,66 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 安装 CMake（第三方最新稳定版 v2.2.0）
+      - name: 安装 CMake
         uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.27.x'
 
-      - name: 安装 Ninja（官方原生，最稳定）
+      - name: 安装 Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: 安装 Android NDK（第三方最新稳定版 v1.6.0）
+      - name: 安装 Android NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: false
 
-      # ---------- 获取最新稳定 Tag ----------
       - name: 获取上游最新稳定 Tag (bXXXX)
         id: get_tag
-        run: |
-          LATEST_TAG=$(git ls-remote --tags "https://github.com/$REPO.git" | \
-                       awk '{print $2}' | grep '^refs/tags/b[0-9]*' | \
-                       sed 's|refs/tags/||' | sort -V | tail -1)
-          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        uses: oprypin/find-latest-tag@v1
+        with:
+          repository: ${{ env.REPO }}
+          regex: '^b[0-9]+$'
+          sort-tags: true
 
-      - name: 恢复上次构建的 Tag 缓存（官方最新 v5.0.4）
+      - name: 恢复上次 Tag 缓存
         id: cache-restore
         uses: actions/cache@v5
         with:
           path: last_tag.txt
           key: last-tag-${{ env.REPO }}
 
-      - name: 判断是否需要构建（仅新稳定 Tag 时触发）
+      - name: 判断是否需要构建
         id: check
         run: |
+          LATEST_TAG="${{ steps.get_tag.outputs.tag }}"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           if [ "${{ github.event_name }}" == "schedule" ]; then
-            if [ -f last_tag.txt ]; then
-              LAST_TAG=$(cat last_tag.txt)
-              if [ "\( LAST_TAG" == " \){{ steps.get_tag.outputs.latest_tag }}" ]; then
-                echo "✅ 无新稳定 Tag（bXXXX 未更新），跳过构建"
-                echo "skip=true" >> $GITHUB_OUTPUT
-              else
-                echo "🆕 检测到新稳定 Tag ${{ steps.get_tag.outputs.latest_tag }}，开始构建"
-                echo "skip=false" >> $GITHUB_OUTPUT
-              fi
+            if [ -f last_tag.txt ] && [ "$(cat last_tag.txt)" = "$LATEST_TAG" ]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
             else
-              echo "📦 首次运行，开始构建"
               echo "skip=false" >> $GITHUB_OUTPUT
             fi
           else
-            echo "🚀 手动触发，强制构建"
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 克隆 llama.cpp（官方最新 v6.0.2，使用最新稳定 Tag）
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: 克隆 llama.cpp
         if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v6
         with:
           repository: ${{ env.REPO }}
-          ref: ${{ steps.get_tag.outputs.latest_tag }}
+          ref: ${{ steps.check.outputs.latest_tag }}
           path: llama.cpp
           fetch-depth: 1
 
-      - name: 配置 & 编译 (OpenMP 彻底静态 + AArch64 Repack)
+      - name: 配置 & 编译
         if: steps.check.outputs.skip != 'true'
         working-directory: llama.cpp
         run: |
@@ -119,13 +114,13 @@ jobs:
             -G Ninja
           cmake --build . --config "${{ env.BUILD_TYPE }}" -j $(nproc)
 
-      - name: 准备二进制文件
+      - name: 准备二进制
         if: steps.check.outputs.skip != 'true'
         run: |
           cp llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server ./llama-server
           chmod +x ./llama-server
 
-      - name: 上传 Artifact（官方最新 v7.0.0，15天后自动删除）
+      - name: 上传 Artifact
         if: steps.check.outputs.skip != 'true' && success()
         uses: actions/upload-artifact@v7
         with:
@@ -133,53 +128,44 @@ jobs:
           path: ./llama-server
           retention-days: 15
 
-      - name: 创建 Release 标签和名称
-        if: steps.check.outputs.skip != 'true' && success()
-        id: release_meta
-        run: |
-          TIMESTAMP=$(date -u +'%Y%m%d-%H%M%S')
-          TAG="\( {{ env.RELEASE_TAG_PREFIX }} \){TIMESTAMP}-${{ steps.get_tag.outputs.latest_tag }}"
-          NAME="\( {{ env.RELEASE_NAME_PREFIX }} \){TIMESTAMP} (Tag ${{ steps.get_tag.outputs.latest_tag }})"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "name=$NAME" >> $GITHUB_OUTPUT
-
-      - name: 上传 Release 资产（第三方最新 v2.6.1）
+      - name: 发布 Release
         if: steps.check.outputs.skip != 'true' && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_meta.outputs.tag }}
-          name: ${{ steps.release_meta.outputs.name }}
-          body: 自动构建于 ${{ steps.release_meta.outputs.name }} (OpenMP 彻底静态链接 libomp.a + AArch64 repack + armv8.7a + 静态 STL，基于上游稳定 Tag ${{ steps.get_tag.outputs.latest_tag }})
+          tag_name: ${{ steps.check.outputs.latest_tag }}
+          name: llama-server Android arm64 - ${{ steps.check.outputs.latest_tag }}
+          body: |
+            **上游版本**: ${{ steps.check.outputs.latest_tag }}
+            **构建时间**: $(date -u +'%Y-%m-%d %H:%M UTC')
+            **特性**: OpenMP 彻底静态 + AArch64 repack + armv8.7a + c++_static STL
+            **平台**: Android arm64-v8a (android-34+)
           files: ./llama-server
           token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
 
-      # ========== 清理部分（官方 gh cli，最稳定可靠）==========
-
-      - name: 清理旧 Releases（保留最新 3 个，同时删除关联 Tag）
+      - name: 清理旧 Releases（保留最新 5 个）
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release list --limit 100 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[3:][] | .tagName' | while read tag; do
-            echo "删除旧 Release: $tag"
+          gh release list --limit 100 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[5:][] | .tagName' | while read tag; do
             gh release delete "$tag" --cleanup-tag --yes
           done
 
-      - name: 清理旧的 Workflow 运行记录（保留最新 3 个）
+      - name: 清理旧 Workflow Runs（保留最新 3 条）
         if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh run list --limit 100 --json databaseId,createdAt --jq 'sort_by(.createdAt) | reverse | .[3:][] | .databaseId' | while read id; do
-            echo "删除旧 Workflow Run: $id"
-            gh run delete "$id" --yes
-          done
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 0
+          keep_minimum_runs: 3
 
-      - name: 保存本次构建的稳定 Tag
+      - name: 保存本次 Tag
         if: steps.check.outputs.skip != 'true' && success()
-        run: echo "${{ steps.get_tag.outputs.latest_tag }}" > last_tag.txt
+        run: echo "${{ steps.check.outputs.latest_tag }}" > last_tag.txt
 
-      - name: 缓存本次稳定 Tag（官方最新 v5.0.4）
+      - name: 缓存 Tag
         if: steps.check.outputs.skip != 'true' && success()
         uses: actions/cache@v5
         with:
