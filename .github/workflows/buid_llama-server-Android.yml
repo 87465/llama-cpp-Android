@@ -1,4 +1,4 @@
-name: Build llama-server for 多版本
+name: Build Android Native arm64 llama-server
 
 on:
   workflow_dispatch:
@@ -19,6 +19,8 @@ env:
   BUILD_TYPE: ${{ github.event.inputs.build_type || 'Release' }}
   BUILD_DIR: build-android
   NDK_VERSION: r27d
+  # 强制使用 Node.js 24 以避免弃用警告
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: write
@@ -134,12 +136,12 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: false
 
-      # 对于 GPU 版本，需要安装 Vulkan SDK（包含 glslc）
-      - name: 安装 Vulkan SDK (仅 GPU 版本)
+      # GPU 版本需要安装 glslc（Vulkan 着色器编译器）
+      - name: 安装 glslc (仅 GPU 版本)
         if: matrix.name == 'cpu-gpu'
-        uses: KhronosGroup/vulkan-sdk@v1
-        with:
-          version: '1.3.275'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslc
 
       - name: 克隆 llama.cpp
         uses: actions/checkout@v6
