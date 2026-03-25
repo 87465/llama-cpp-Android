@@ -1,6 +1,5 @@
-name: Build llama-server for Android 9+ (OpenCL Only)
+name: Build llama-server for Android 9+ (Universal OpenCL)
 
-# 修改点1: 移除 schedule 触发，仅保留 workflow_dispatch
 on:
   workflow_dispatch:
     inputs:
@@ -16,7 +15,7 @@ on:
 env:
   REPO: ${{ github.event.inputs.repo || 'ggml-org/llama.cpp' }}
   BUILD_TYPE: ${{ github.event.inputs.build_type || 'Release' }}
-  BUILD_DIR: build-android
+  BUILD_DIR: build-android-universal
   NDK_VERSION: r27d
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -33,30 +32,25 @@ jobs:
           repository: ${{ env.REPO }}
           regex: '^b[0-9]+$'
           sort-tags: true
+          node-version: 24
 
   build:
     needs: get_tag
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: armv9-opt
-            artifact_name: llama-server-armv9-a
-            cmake_flags: '-DCMAKE_C_FLAGS="-march=armv9-a+nosve+dotprod+i8mm -mtune=cortex-a710" -DCMAKE_CXX_FLAGS="-march=armv9-a+nosve+dotprod+i8mm -mtune=cortex-a710" -DGGML_ARM_I8MM=ON -DGGML_ARM_DOTPROD=ON -DGGML_CPU_AARCH64_REPACK=ON'
-          - name: opencl-gpu
-            artifact_name: llama-server-opencl-gpu
-            cmake_flags: '-DCMAKE_C_FLAGS="-march=armv8-a" -DCMAKE_CXX_FLAGS="-march=armv8-a" -DGGML_ARM_I8MM=OFF -DGGML_ARM_DOTPROD=OFF -DGGML_CPU_AARCH64_REPACK=OFF -DLLAMA_OPENCL=ON'  # 修改点2: GPU后端明确为OpenCL
-
     steps:
       - name: 安装构建工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build opencl-headers
+          sudo apt-get install -y cmake ninja-build git build-essential pkg-config
+          sudo apt-get install -y ocl-icd-opencl-dev opencl-headers
+
       - name: 安装 Android NDK
+        id: setup_ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
       - name: 克隆 llama.cpp
         uses: actions/checkout@v6
         with:
@@ -64,30 +58,49 @@ jobs:
           ref: ${{ needs.get_tag.outputs.latest_tag }}
           path: llama.cpp
           fetch-depth: 1
-      - name: 配置 & 编译
+
+      - name: 配置 & 编译 (Universal OpenCL)
         working-directory: llama.cpp
         run: |
           mkdir -p ${{ env.BUILD_DIR }}
           cd ${{ env.BUILD_DIR }}
+          
+          # 关键修改：使用高度兼容的编译参数
           cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \  # 安卓9对应API 28
-            ${{ matrix.cmake_flags }} \
+            -DANDROID_PLATFORM=android-28 \
+            -DLLAMA_OPENCL=ON \  # 启用 OpenCL GPU 加速
+            -DCMAKE_C_FLAGS="-march=armv8-a" \   # 移除所有高级扩展，使用 ARMv8-A 基线
+            -DCMAKE_CXX_FLAGS="-march=armv8-a" \
+            -DGGML_ARM_I8MM=OFF \   # 禁用可能不兼容的指令集
+            -DGGML_ARM_DOTPROD=OFF \
+            -DGGML_CPU_AARCH64_REPACK=OFF \
             -DGGML_OPENMP=ON \
-            -DOpenMP_C_FLAGS="-fopenmp -static-openmp" \
-            -DOpenMP_CXX_FLAGS="-fopenmp -static-openmp" \
             -DGGML_LLAMAFILE=OFF \
             -DBUILD_SHARED_LIBS=OFF \
             -DANDROID_STL=c++_static \
             -DGGML_BLAS=OFF \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_EXE_LINKER_FLAGS="-static-openmp -Wl,-Bstatic -lomp -Wl,-Bdynamic" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-openmp" \
             -G Ninja
-          cmake --build . --config "${{ env.BUILD_TYPE }}" -j $(nproc)
+          
+          cmake --build . --config "${{ env.BUILD_TYPE }}" -j $(nproc) --target llama-server
+
+      - name: 验证构建产物
+        run: |
+          if [ -f "llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server" ]; then
+            echo "✅ 构建成功！产物: llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server"
+            file "llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server"
+          else
+            echo "❌ 构建失败，未找到输出文件"
+            ls -la "llama.cpp/${{ env.BUILD_DIR }}/bin/" || echo "bin目录不存在"
+            exit 1
+          fi
+
       - name: 上传 Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}
+          name: llama-server-universal-opencl
           path: llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server
           retention-days: 15
