@@ -1,5 +1,6 @@
-name: Build Android Native arm64 llama-server
+name: Build llama-server for Android 9+ (OpenCL Only)
 
+# 修改点1: 移除 schedule 触发，仅保留 workflow_dispatch
 on:
   workflow_dispatch:
     inputs:
@@ -11,39 +12,21 @@ on:
         description: 'Release 或 Debug'
         required: true
         default: 'Release'
-  schedule:
-    - cron: '0 0 */3 * *'   # 每 3 天 UTC 0 点检测一次
 
 env:
   REPO: ${{ github.event.inputs.repo || 'ggml-org/llama.cpp' }}
   BUILD_TYPE: ${{ github.event.inputs.build_type || 'Release' }}
   BUILD_DIR: build-android
   NDK_VERSION: r27d
-  ARTIFACT_NAME: "llama-server-android-arm64-openmp-repack-static-7plus-gen2-armv9"
-
-permissions:
-  contents: write
-  actions: write
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build:
+  get_tag:
     runs-on: ubuntu-latest
+    outputs:
+      latest_tag: ${{ steps.get_tag.outputs.tag }}
     steps:
-      - name: 安装 CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.27.x'
-
-      - name: 安装 Ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-
-      - name: 安装 Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: ${{ env.NDK_VERSION }}
-          add-to-path: false
-
-      - name: 获取上游最新稳定 Tag (bXXXX)
+      - name: 获取上游最新稳定 Tag
         id: get_tag
         uses: oprypin/find-latest-tag@v1
         with:
@@ -51,45 +34,37 @@ jobs:
           regex: '^b[0-9]+$'
           sort-tags: true
 
-      - name: 恢复上次 Tag 缓存
-        id: cache-restore
-        uses: actions/cache@v5
-        with:
-          path: last_tag.txt
-          key: last-tag-${{ env.REPO }}
+  build:
+    needs: get_tag
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: armv9-opt
+            artifact_name: llama-server-armv9-a
+            cmake_flags: '-DCMAKE_C_FLAGS="-march=armv9-a+nosve+dotprod+i8mm -mtune=cortex-a710" -DCMAKE_CXX_FLAGS="-march=armv9-a+nosve+dotprod+i8mm -mtune=cortex-a710" -DGGML_ARM_I8MM=ON -DGGML_ARM_DOTPROD=ON -DGGML_CPU_AARCH64_REPACK=ON'
+          - name: opencl-gpu
+            artifact_name: llama-server-opencl-gpu
+            cmake_flags: '-DCMAKE_C_FLAGS="-march=armv8-a" -DCMAKE_CXX_FLAGS="-march=armv8-a" -DGGML_ARM_I8MM=OFF -DGGML_ARM_DOTPROD=OFF -DGGML_CPU_AARCH64_REPACK=OFF -DLLAMA_OPENCL=ON'  # 修改点2: GPU后端明确为OpenCL
 
-      - name: 判断是否需要构建
-        id: check
+    steps:
+      - name: 安装构建工具
         run: |
-          LATEST_TAG="${{ steps.get_tag.outputs.tag }}"
-          if [ -z "$LATEST_TAG" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          if [ "${{ github.event_name }}" == "schedule" ]; then
-            if [ -f last_tag.txt ] && [ "$(cat last_tag.txt)" = "$LATEST_TAG" ]; then
-              echo "skip=true" >> $GITHUB_OUTPUT
-            else
-              echo "skip=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-
+          sudo apt-get update
+          sudo apt-get install -y ninja-build opencl-headers
+      - name: 安装 Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
       - name: 克隆 llama.cpp
-        if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v6
         with:
           repository: ${{ env.REPO }}
-          ref: ${{ steps.check.outputs.latest_tag }}
+          ref: ${{ needs.get_tag.outputs.latest_tag }}
           path: llama.cpp
           fetch-depth: 1
-
-      - name: 配置 & 编译（骁龙7+ Gen2 Armv9-A 实机优化版，无LTO/无符号剥离/无显式-O3）
-        if: steps.check.outputs.skip != 'true'
+      - name: 配置 & 编译
         working-directory: llama.cpp
         run: |
           mkdir -p ${{ env.BUILD_DIR }}
@@ -97,9 +72,8 @@ jobs:
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-35 \
-            -DCMAKE_C_FLAGS="-march=armv9-a+nosve+dotprod+i8mm -mtune=cortex-a710" \
-            -DCMAKE_CXX_FLAGS="-march=armv9-a+nosve+dotprod+i8mm -mtune=cortex-a710" \
+            -DANDROID_PLATFORM=android-28 \  # 安卓9对应API 28
+            ${{ matrix.cmake_flags }} \
             -DGGML_OPENMP=ON \
             -DOpenMP_C_FLAGS="-fopenmp -static-openmp" \
             -DOpenMP_CXX_FLAGS="-fopenmp -static-openmp" \
@@ -108,67 +82,12 @@ jobs:
             -DANDROID_STL=c++_static \
             -DGGML_BLAS=OFF \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DGGML_CPU_AARCH64_REPACK=ON \
-            -DGGML_ARM_I8MM=ON \
-            -DGGML_ARM_DOTPROD=ON \
             -DCMAKE_EXE_LINKER_FLAGS="-static-openmp -Wl,-Bstatic -lomp -Wl,-Bdynamic" \
             -G Ninja
           cmake --build . --config "${{ env.BUILD_TYPE }}" -j $(nproc)
-
-      - name: 准备二进制
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          cp llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server ./llama-server
-          chmod +x ./llama-server
-
       - name: 上传 Artifact
-        if: steps.check.outputs.skip != 'true' && success()
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ./llama-server
+          name: ${{ matrix.artifact_name }}
+          path: llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server
           retention-days: 15
-
-      - name: 发布 Release
-        if: steps.check.outputs.skip != 'true' && success()
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.check.outputs.latest_tag }}
-          name: llama-server Android arm64 - ${{ steps.check.outputs.latest_tag }}
-          body: |
-            **上游版本**: ${{ steps.check.outputs.latest_tag }}
-            **构建时间**: $(date -u +'%Y-%m-%d %H:%M UTC')
-            **特性**: OpenMP 彻底静态 + AArch64 repack + **适配Armv9-A系列CPU处理器** + **armv9-a+nosve+dotprod+i8mm** + c++_static STL
-            **平台**: Android arm64-v8a (android-35+)
-          files: ./llama-server
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-
-      - name: 清理旧 Releases（保留最新 5 个）
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release list --limit 100 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[5:][] | .tagName' | while read tag; do
-            gh release delete "$tag" --cleanup-tag --yes
-          done
-
-      - name: 清理旧 Workflow Runs（保留最新 3 条）
-        if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          retain_days: 0
-          keep_minimum_runs: 3
-
-      - name: 保存本次 Tag
-        if: steps.check.outputs.skip != 'true' && success()
-        run: echo "${{ steps.check.outputs.latest_tag }}" > last_tag.txt
-
-      - name: 缓存 Tag
-        if: steps.check.outputs.skip != 'true' && success()
-        uses: actions/cache@v5
-        with:
-          path: last_tag.txt
-          key: last-tag-${{ env.REPO }}
