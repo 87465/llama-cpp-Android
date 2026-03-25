@@ -32,7 +32,7 @@ llama-server for Android (ARM64, Armv9-A Optimized)
 
 📥 下载
 
-从 Releases 页面下载最新发布的 llama-server 文件。
+从 [Releases](https://github.com/045200/llama-cpp-Android/releases)页面下载最新发布的 llama-server 文件。
 
 文件名示例：
 llama-server-android-arm64-openmp-repack-static-7plus-gen2-armv9
