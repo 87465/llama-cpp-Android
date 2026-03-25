@@ -1,6 +1,6 @@
 llama-server for Android (ARM64, Armv9-A Optimized)
 
-基于 llama.cpp 构建的 Android 原生可执行文件，专为 Armv9-A 架构 处理器深度优化，纯 CPU 推理，支持 OpenMP 静态链接，开箱即用。
+基于[llama.cpp](https://github.com/ggml-org/llama.cpp)构建的 Android 原生可执行文件，专为 Armv9-A 架构 处理器深度优化，纯 CPU 推理，支持 OpenMP 静态链接，开箱即用。
 
 ---
 
@@ -93,7 +93,7 @@ CMake 选项 GGML_OPENMP=ON GGML_CPU_AARCH64_REPACK=ON GGML_ARM_I8MM=ON GGML_ARM
 链接方式 OpenMP 静态链接（-static-openmp）
 构建系统 CMake + Ninja
 
-每次上游 llama.cpp 发布新的 bXXXX 格式标签时，工作流会自动触发构建并发布到 Releases（保留最近 5 个版本）。
+每次上游[llama.cpp](https://github.com/ggml-org/llama.cpp)发布新的 bXXXX 格式标签时，工作流会自动触发构建并发布到 Releases（保留最近 5 个版本）。
 
 ---
 
@@ -111,11 +111,12 @@ CMake 选项 GGML_OPENMP=ON GGML_CPU_AARCH64_REPACK=ON GGML_ARM_I8MM=ON GGML_ARM
 📝 许可证
 
 本仓库的构建脚本遵循 MIT 许可证。
-生成的二进制文件基于 llama.cpp 构建，其本身遵循 MIT 许可证。
+生成的二进制文件基于[llama.cpp](https://github.com/ggml-org/llama.cpp)构建，其本身遵循 MIT 许可证。
 
 ---
 
 🤝 致谢
 
-· llama.cpp 项目团队
+· [llama.cpp](https://github.com/ggml-org/llama.cpp)项目团队
+
 · GitHub Actions 提供的免费构建资源
