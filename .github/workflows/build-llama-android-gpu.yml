@@ -1,0 +1,125 @@
+name: Build llama-server for Android 9+ (OpenCL Debug) gpu
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'llama.cpp 仓库 (owner/repo)'
+        required: true
+        default: 'ggerganov/llama.cpp'  # 修正：使用官方仓库
+      build_type:
+        description: 'Release 或 Debug'
+        required: true
+        default: 'Release'
+
+env:
+  REPO: ${{ github.event.inputs.repo || 'ggerganov/llama.cpp' }}
+  BUILD_TYPE: ${{ github.event.inputs.build_type || 'Release' }}
+  BUILD_DIR: build-android-universal
+  NDK_VERSION: r27d
+
+jobs:
+  get_tag:
+    runs-on: ubuntu-latest
+    outputs:
+      latest_tag: ${{ steps.get_tag.outputs.tag }}
+    steps:
+      - name: 获取上游最新稳定 Tag
+        id: get_tag
+        uses: oprypin/find-latest-tag@v1
+        with:
+          repository: ${{ env.REPO }}
+          regex: '^b[0-9]+$'
+          sort-tags: true
+          node-version: 24
+
+  build:
+    needs: get_tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装构建工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build git build-essential pkg-config
+          sudo apt-get install -y ocl-icd-opencl-dev opencl-headers
+
+      - name: 安装 Android NDK
+        id: setup_ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: 克隆 llama.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.REPO }}
+          ref: ${{ needs.get_tag.outputs.latest_tag }}
+          path: llama.cpp
+          fetch-depth: 1
+          submodules: recursive  # 关键：递归拉取子模块
+
+      - name: 验证环境
+        run: |
+          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
+          echo "PATH: $PATH"
+          which cmake
+          cmake --version
+          echo "OpenCL headers:"
+          find /usr/include -name "CL" -type d 2>/dev/null || echo "No OpenCL headers found"
+
+      - name: 配置 CMake (调试信息)
+        working-directory: llama.cpp
+        run: |
+          mkdir -p ${{ env.BUILD_DIR }}
+          cd ${{ env.BUILD_DIR }}
+          
+          # 启用详细输出，查看 CMake 配置
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DLLAMA_OPENCL=ON \
+            -DCMAKE_VERBOSE_MAKEFILE=ON \  # 查看编译细节
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -G Ninja
+          
+          # 查看 CMake 缓存变量，确认 OpenCL 启用状态
+          grep -i "opencl\|gpu" CMakeCache.txt || echo "No OpenCL related vars found"
+
+      - name: 编译
+        working-directory: llama.cpp/${{ env.BUILD_DIR }}
+        run: |
+          echo "开始编译..."
+          cmake --build . --config "${{ env.BUILD_TYPE }}" -j $(nproc) --target llama-server
+          echo "编译完成"
+          
+          # 检查二进制文件是否包含 OpenCL 符号
+          echo "检查二进制文件..."
+          ./bin/llama-server --help 2>&1 | grep -i "gpu\|opencl\|cuda\|vulkan" || echo "No GPU related help found"
+          strings ./bin/llama-server | grep -i "clblast\|opencl" | head -5 || echo "No OpenCL strings found"
+
+      - name: 验证构建产物
+        run: |
+          echo "检查产物..."
+          if [ -f "llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server" ]; then
+            echo "✅ 构建成功！"
+            echo "文件信息:"
+            file "llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server"
+            echo -e "\n文件大小:"
+            ls -lh "llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server"
+            echo -e "\n动态链接库依赖:"
+            readelf -d "llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server" 2>/dev/null | grep -i "needed" || echo "静态链接"
+          else
+            echo "❌ 构建失败，未找到输出文件"
+            echo "目录结构:"
+            find llama.cpp -name "llama-server" -type f
+            exit 1
+          fi
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: llama-server-universal-opencl
+          path: llama.cpp/${{ env.BUILD_DIR }}/bin/llama-server
+          retention-days: 15
