@@ -107,11 +107,17 @@ jobs:
         with:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: false
-      - name: 安装 glslc (仅 GPU 版本)
+      - name: 安装 Vulkan SDK 和 glslc (仅 GPU 版本)
         if: matrix.name == 'cpu-gpu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y glslc
+          sudo apt-get install -y vulkan-sdk
+          # 如果 vulkan-sdk 不可用，则安装替代包
+          if ! command -v glslc &> /dev/null; then
+            sudo apt-get install -y glslc
+          fi
+          # 验证头文件存在
+          ls /usr/include/vulkan/vulkan.hpp || echo "vulkan.hpp not found in system"
       - name: 克隆 llama.cpp
         uses: actions/checkout@v6
         with:
